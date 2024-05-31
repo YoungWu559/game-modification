@@ -2,12 +2,11 @@ import numpy as np
 import itertools
 from gurobipy import *
 import random
-
-def INV_check(R,p,q):
+def INV_check(R,p,q,tol):
     I = np.nonzero(p)[0]
     J = np.nonzero(q)[0]
     aug = np.block([[R[I][:,J], -np.ones((len(I),1))],[np.ones(len(J)), 0]])
-    return np.linalg.svd(aug, compute_uv = False)[-1] > 1e-20
+    return np.linalg.cond(aug) < tol*1.001
 
 def SIISOW_check(R,p,q,iota = 1e-15, tol = 1e-15):
     n = len(p)
@@ -37,7 +36,7 @@ def SIISOW_check(R,p,q,iota = 1e-15, tol = 1e-15):
         l2.append(-(p @ R @ ej - val - iota))
     return (max(max(l1),max(l2)) <= tol)
 
-def RPS(p,q):
+def eRPS(p,q):
     n = len(p)
     m = len(q)
     
@@ -86,7 +85,6 @@ def RPS(p,q):
          for j, orig_j in enumerate(nonzero_indices_q):
             reindexed_RPS[orig_i, orig_j] = RPS[i, j]
     return reindexed_RPS
-
 class InvalidPolicyError(Exception):
     pass
 
@@ -179,17 +177,21 @@ def RAP(policy_1, policy_2, original_reward, reward_bound=float('inf'),
     nash.optimize()   
     R_values = np.array(R.X)
     # obj = nash.getObjective()
-
+    adjusted_R = R_values
+    RPS = eRPS(policy_1,policy_2)
     
-    for _ in range(condition_number_bound):
-        if INV_check(R_values,policy_1,policy_2)!=True:
-            if perturbation_value is not None:
-                R_values += perturbation_value * RPS(policy_1,policy_2)
+    if INV_check(R_values,policy_1,policy_2,condition_number_bound)!=True:
+        if perturbation_value is not None:
+            R_values += perturbation_value * RPS
+            if INV_check(R_values,policy_1,policy_2,condition_number_bound):
+                return R_values
             else:
-                R_values += np.random.uniform(-1, 1) * perturbation_bound * RPS(policy_1,policy_2)
+                raise InvalidPerturbationError("Failed to achieve a Nash equilibrium with the specified perturbations.")
         else:
-            break
-    else:
-        raise InvalidPerturbationError("Failed to achieve a Nash equilibrium with the specified perturbations.")
-
+            for _ in range(100):
+                adjusted_R = R_values + np.random.uniform(-1, 1) * perturbation_bound * RPS
+                if INV_check(adjusted_R,policy_1,policy_2,condition_number_bound):
+                    return adjusted_R
+            else:
+                raise InvalidPerturbationError("Failed to achieve a Nash equilibrium with the specified perturbations.")
     return R_values
